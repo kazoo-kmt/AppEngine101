@@ -1,7 +1,10 @@
 import webapp2
 import json
+import logging
+import traceback
 
-from User import User
+from lib.models.User import *
+from lib.models.Todo import *
 
 
 class MissingParameterException(Exception):
@@ -9,14 +12,18 @@ class MissingParameterException(Exception):
 
 
 errormap = {
-  MissingParameterException: (102, 'Missing parameter')
+  MissingParameterException: (102, 'Missing parameter'),
+  FailedAuthorizationException: (103, 'Auth failed'),
+  EmailInUseException: (104, 'email in use'),
+  UsernameInUseException: (105, 'username in use'),
+  InvalidPermissionsException: (106, 'Invalid todo permissions')
 }
 
 
 class APIRequestHandler(webapp2.RequestHandler):
   def dispatch(self):
     try:
-      if self.request.method.lower() != 'get':
+      if not self.request.method.lower() in ['get', 'delete']:
         self.request.json = json.loads(self.request.body)
       response = super(APIRequestHandler, self).dispatch()
       if not response:
@@ -28,6 +35,8 @@ class APIRequestHandler(webapp2.RequestHandler):
         code, message = errormap[error_cls]
       else:
         code, message = (-1, 'Unknown error')
+        logging.error(error)
+        traceback.print_exc()
       
       self.error(500)
       response = {
@@ -51,23 +60,56 @@ class UsersHandler(APIRequestHandler):
       raise MissingParameterException()
     
     user = User.signup(email, password, username)
-    return user.toDict()
-    
-  def get(self):
+    return user.toPrivateDict()
+  
+  @RequireAuth
+  def delete(self, user=None):
+    user.delete()
+    return {}
+  
+  @RequireAuth
+  def get(self, user=None):
     users = User.queryAll()
     return {
-      'users': [user.toDict() for user in users]
+      'users': [user.toPublicDict() for user in users]
     }
     
     
+class TodoHandler(APIRequestHandler):
+  @RequireAuth
+  def post(self, user=None):
+    try:
+      title = self.request.json['title']
+    except:
+      raise MissingParameterException()
+    
+    todo = Todo.create(title, user)
+    return { 'todo': todo.toPrivateDict() }
+  
+  @RequireAuth
+  def get(self, user=None):
+    todos = Todo.queryByUser(user)
+    return {
+      'todos': [todo.toPrivateDict() for todo in todos]
+    }
 
 
-class DefaultHandler(APIRequestHandler):
-  def get(self):
-    self.response.write('Hello World!')
+class TodoByIdHandler(APIRequestHandler):
+  @RequireAuth
+  def put(self, todoid, user=None):
+    todo = Todo.get_by_id(int(todoid))
+    todo.complete(user)
+    return {}
+  
+  @RequireAuth
+  def delete(self, todoid, user=None):
+    todo = Todo.get_by_id(int(todoid))
+    todo.delete(user)
+    return {}
 
 
 app = webapp2.WSGIApplication([
   ('/api/v1/users', UsersHandler),
-  ('.*', DefaultHandler)
+  ('/api/v1/todo', TodoHandler),
+  ('/api/v1/todo/(\d+)', TodoByIdHandler)
 ], debug=True)
